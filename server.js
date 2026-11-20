@@ -48,10 +48,15 @@ function makeCard() {
   }
   return card;
 }
+function hostOnline(room) { return !!io.sockets.sockets.get(room.hostId)?.connected; }
+function isController(room, id) { return id === room.hostId || (!hostOnline(room) && id === room.backupId); }
+function controllingRoom(id) { return [...rooms.values()].find(r => isController(r, id)); }
+function notifyControl(room) { io.to(room.code).emit('room:control', { hostOnline: hostOnline(room), backupId: room.backupId }); }
 function publicRoom(room) {
   return {
     code: room.code, status: room.status, mode: room.mode,
-    players: [...room.players.values()].map(p => ({ id: p.id, name: p.name, isHost: p.id === room.hostId })),
+    host: { name: room.host.name, online: hostOnline(room) }, backupId: room.backupId,
+    players: [...room.players.values()].map(p => ({ id: p.id, name: p.name, isBackup: p.id === room.backupId, online: !!io.sockets.sockets.get(p.id)?.connected })),
     pending: [...room.pending.values()].map(p => ({ id: p.id, name: p.name })),
     drawn: room.drawn, last: room.drawn.at(-1) ?? null, winners: room.winners
   };
@@ -78,18 +83,20 @@ io.on('connection', socket => {
   socket.on('room:resume', ({ code, token } = {}, cb = () => {}) => {
     const room = rooms.get(String(code || '').trim());
     if (!room || typeof token !== 'string') return cb({ ok: false, error: 'Oturum bulunamadı. Sunucu yeniden başlamış olabilir.' });
-    const entry = [...room.players.entries()].find(([, p]) => p.token === token) ||
-                  [...room.pending.entries()].find(([, p]) => p.token === token);
+    const hostEntry = room.host.token === token;
+    const entry = hostEntry ? [room.hostId, room.host] : ([...room.players.entries()].find(([, p]) => p.token === token) ||
+                  [...room.pending.entries()].find(([, p]) => p.token === token));
     if (!entry) return cb({ ok: false, error: 'Oturum bulunamadı.' });
     const [oldId, player] = entry;
-    const approved = room.players.has(oldId);
+    const approved = hostEntry || room.players.has(oldId);
     if (oldId !== socket.id) {
       const oldSocket = io.sockets.sockets.get(oldId);
       if (oldSocket) { oldSocket.leave(room.code); oldSocket.disconnect(true); }
-      (approved ? room.players : room.pending).delete(oldId);
+      if (!hostEntry) (approved ? room.players : room.pending).delete(oldId);
       player.id = socket.id;
-      (approved ? room.players : room.pending).set(socket.id, player);
-      if (room.hostId === oldId) room.hostId = socket.id;
+      if (!hostEntry) (approved ? room.players : room.pending).set(socket.id, player);
+      if (hostEntry) room.hostId = socket.id;
+      if (room.backupId === oldId) room.backupId = socket.id;
       for (const kind of ['first', 'second', 'tombala']) {
         if (room.claims.delete(`${oldId}:${kind}`)) room.claims.add(`${socket.id}:${kind}`);
       }
@@ -97,16 +104,16 @@ io.on('connection', socket => {
     }
     socket.join(room.code);
     console.log('[socket] resumed', room.code, socket.id, approved ? 'approved' : 'pending');
-    cb({ ok: true, code: room.code, token, pending: !approved, card: player.card,
-         isHost: room.hostId === socket.id, room: publicRoom(room) });
-    emitRoom(room);
+    cb({ ok: true, code: room.code, token, pending: !approved, card: hostEntry ? null : player.card,
+         isHost: hostEntry, room: publicRoom(room) });
+    emitRoom(room); notifyControl(room);
   });
   socket.on('room:create', ({ name }, cb = () => {}) => {
     const code = roomCode();
-    const room = { code, hostId: socket.id, players: new Map(), pending: new Map(), drawn: [], status: 'lobby', mode: 'manual', timer: null, claims: new Set(), winners: [] };
-    const player = { id: socket.id, name: String(name || 'Yönetici').slice(0, 24), card: makeCard(), token: sessionToken() };
-    room.players.set(socket.id, player); rooms.set(code, room); socket.join(code);
-    cb({ ok: true, code, card: player.card, token: player.token, isHost: true, room: publicRoom(room) });
+    const room = { code, hostId: socket.id, backupId: null, host: null, players: new Map(), pending: new Map(), drawn: [], status: 'lobby', mode: 'manual', timer: null, claims: new Set(), winners: [] };
+    const player = { id: socket.id, name: String(name || 'Yönetici').slice(0, 24), card: null, token: sessionToken() };
+    room.host = player; rooms.set(code, room); socket.join(code);
+    cb({ ok: true, code, card: null, token: player.token, isHost: true, room: publicRoom(room) });
     emitRoom(room);
   });
 
@@ -123,7 +130,7 @@ io.on('connection', socket => {
   });
 
   socket.on('room:approve', ({ playerId, approve }, cb = () => {}) => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = controllingRoom(socket.id);
     if (!room) return cb({ ok: false, error: 'Yalnızca yönetici onay verebilir.' });
     const p = room.pending.get(playerId);
     if (!p) return cb({ ok: false, error: 'Katılım isteği bulunamadı.' });
@@ -138,8 +145,16 @@ io.on('connection', socket => {
     cb({ ok: true }); emitRoom(room);
   });
 
-  socket.on('game:start', ({ mode }, cb = () => {}) => {
+  socket.on('room:setBackup', ({ playerId } = {}, cb = () => {}) => {
     const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    if (!room) return cb({ ok: false, error: 'Yedek yöneticiyi yalnızca asıl yönetici seçebilir.' });
+    if (playerId !== null && !room.players.has(playerId)) return cb({ ok: false, error: 'Oyuncu bulunamadı.' });
+    room.backupId = playerId;
+    cb({ ok: true }); emitRoom(room); notifyControl(room);
+  });
+
+  socket.on('game:start', ({ mode }, cb = () => {}) => {
+    const room = controllingRoom(socket.id);
     if (!room) return cb({ ok: false, error: 'Yalnızca yönetici başlatabilir.' });
     if (room.players.size < 1) return cb({ ok: false, error: 'Oyuncu bulunamadı.' });
     room.status = 'playing'; room.mode = mode === 'auto' ? 'auto' : 'manual';
@@ -149,7 +164,7 @@ io.on('connection', socket => {
   });
 
   socket.on('game:draw', cb => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = controllingRoom(socket.id);
     if (!room) return cb?.({ ok: false, error: 'Numarayı yalnızca yönetici çekebilir.' });
     const number = drawNumber(room); cb?.({ ok: !!number, number });
   });
@@ -158,6 +173,7 @@ io.on('connection', socket => {
     const room = [...rooms.values()].find(r => r.players.has(socket.id));
     if (!room || room.status !== 'playing') return cb({ ok: false, error: 'Aktif oyun bulunamadı.' });
     const p = room.players.get(socket.id);
+    if (!p?.card) return cb({ ok: false, error: 'Yönetici kazanma talebinde bulunamaz.' });
     const rows = winnerRows(p.card, room.drawn);
     const completed = rows.filter(Boolean).length;
     const valid = kind === 'tombala' ? completed === 3 : kind === 'second' ? completed >= 2 : completed >= 1;
@@ -174,7 +190,7 @@ io.on('connection', socket => {
   });
 
   socket.on('game:reset', cb => {
-    const room = [...rooms.values()].find(r => r.hostId === socket.id);
+    const room = controllingRoom(socket.id);
     if (!room) return cb?.({ ok: false, error: 'Yalnızca yönetici sıfırlayabilir.' });
     stopAuto(room); room.drawn = []; room.claims.clear(); room.winners = []; room.status = 'lobby'; room.mode = 'manual';
     for (const p of room.players.values()) {
@@ -189,8 +205,9 @@ io.on('connection', socket => {
     // Keep approved players, pending requests, and the host's room in memory.
     // The client can reconnect with its secret session token.
     for (const room of rooms.values()) {
-      if (room.players.has(socket.id) || room.pending.has(socket.id)) {
+      if (room.hostId === socket.id || room.players.has(socket.id) || room.pending.has(socket.id)) {
         console.log('[room] offline', room.code, socket.id);
+        emitRoom(room); notifyControl(room);
       }
     }
   });
