@@ -1,26 +1,32 @@
-# Tombala 90 — Online MVP
+# KasımTombala – Online
 
-A mobile-friendly Turkish tombala web app with room creation, 6-digit room codes, host approval, up to 100 players per room, one ticket per player, manual/automatic draws, and server-side claim validation.
+KasımTombala is a mobile-friendly Turkish Tombala game built with Node.js, Express and Socket.IO.
+
+## Features
+- Room creation and six-digit room codes
+- Host approval for joining players
+- Up to 100 players per room (application-level cap)
+- One automatically generated 3x9 / 15-number ticket per player
+- Manual or automatic number drawing
+- Server-side validation of first çinko, second çinko and tombala claims
+- Winner lists separated by prize category; multiple winners per category are displayed
+- `/health` health-check endpoint
 
 ## Run locally
-
-Requires Node.js 20+.
 
 ```bash
 npm install
 npm start
 ```
 
-Open http://localhost:3000. For testing multiple players, open the URL in multiple browser windows/devices on the same network (use the host computer's LAN IP for phones).
+The server listens on `process.env.PORT` or port `3000`.
 
-## Deploy
+## Deploy on Render
 
-Deploy as a persistent Node.js web service (not a static-site host). Build command: `npm install`; start command: `npm start`. Set `PORT` if your host requires it. Use HTTPS in production.
+- Build command: `npm install`
+- Start command: `npm start`
+- Health check path: `/health`
 
-## Important MVP limitations
+## Important production notes
 
-- Rooms and game state live in server memory. Restarting the service closes active rooms.
-- This is a single-process MVP; horizontal scaling, Redis adapter, persistent storage, monitoring, rate limits, abuse protection, and production load testing are not included.
-- Reconnection recovery and account authentication are not yet implemented.
-- Automatic draw interval is 5 seconds.
-- The UI is a responsive web app; Android/iOS store packaging (PWA/native wrapper) is a later step.
+The current MVP stores rooms and game state in process memory. A server restart or redeploy clears active rooms and winners. Before relying on the service for regular events, add persistent storage (e.g. PostgreSQL), reconnect/session recovery, and perform a 100-client load test. The 100-player room limit is an application setting, not a verified capacity guarantee.

@@ -7,7 +7,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 app.use(express.static('public'));
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'tombala90' }));
+app.get('/health', (_req, res) => res.json({ ok: true, service: 'kasimtombala' }));
 
 const rooms = new Map();
 const MAX_PLAYERS = 100;
@@ -52,7 +52,7 @@ function publicRoom(room) {
     code: room.code, status: room.status, mode: room.mode,
     players: [...room.players.values()].map(p => ({ id: p.id, name: p.name, isHost: p.id === room.hostId })),
     pending: [...room.pending.values()].map(p => ({ id: p.id, name: p.name })),
-    drawn: room.drawn, last: room.drawn.at(-1) ?? null
+    drawn: room.drawn, last: room.drawn.at(-1) ?? null, winners: room.winners
   };
 }
 function emitRoom(room) { io.to(room.code).emit('room:update', publicRoom(room)); }
@@ -75,7 +75,7 @@ function winnerRows(card, drawn) {
 io.on('connection', socket => {
   socket.on('room:create', ({ name }, cb = () => {}) => {
     const code = roomCode();
-    const room = { code, hostId: socket.id, players: new Map(), pending: new Map(), drawn: [], status: 'lobby', mode: 'manual', timer: null, claims: new Set() };
+    const room = { code, hostId: socket.id, players: new Map(), pending: new Map(), drawn: [], status: 'lobby', mode: 'manual', timer: null, claims: new Set(), winners: [] };
     const player = { id: socket.id, name: String(name || 'Yönetici').slice(0, 24), card: makeCard() };
     room.players.set(socket.id, player); rooms.set(code, room); socket.join(code);
     cb({ ok: true, code, card: player.card, isHost: true, room: publicRoom(room) });
@@ -138,14 +138,17 @@ io.on('connection', socket => {
     if (room.claims.has(key)) return cb({ ok: true, duplicate: true });
     room.claims.add(key);
     const label = kind === 'tombala' ? 'TOMBALA' : kind === 'second' ? 'İKİNCİ ÇİNKO' : 'BİRİNCİ ÇİNKO';
-    io.to(room.code).emit('game:winner', { player: p.name, kind, label });
+    const winner = { playerId: socket.id, player: p.name, kind, label, numberCount: room.drawn.length, at: new Date().toISOString() };
+    room.winners.push(winner);
+    io.to(room.code).emit('game:winner', { winner, winners: room.winners });
+    emitRoom(room);
     cb({ ok: true, label });
   });
 
   socket.on('game:reset', cb => {
     const room = [...rooms.values()].find(r => r.hostId === socket.id);
     if (!room) return cb?.({ ok: false, error: 'Yalnızca yönetici sıfırlayabilir.' });
-    stopAuto(room); room.drawn = []; room.claims.clear(); room.status = 'lobby'; room.mode = 'manual';
+    stopAuto(room); room.drawn = []; room.claims.clear(); room.winners = []; room.status = 'lobby'; room.mode = 'manual';
     for (const p of room.players.values()) p.card = makeCard();
     io.to(room.code).emit('game:reset'); emitRoom(room); cb?.({ ok: true });
   });
@@ -162,4 +165,4 @@ io.on('connection', socket => {
 });
 
 const port = process.env.PORT || 3000;
-server.listen(port, () => console.log(`Tombala 90 running on ${port}`));
+server.listen(port, () => console.log(`KasımTombala running on ${port}`));
