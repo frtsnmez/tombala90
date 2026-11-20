@@ -1,0 +1,10 @@
+{
+  "name": "tombala90-online",
+  "version": "0.1.0",
+  "private": true,
+  "description": "100-player Turkish Tombala online MVP",
+  "main": "server.js",
+  "scripts": {"start": "node server.js"},
+  "dependencies": {"express": "^4.21.2", "socket.io": "^4.8.1"},
+  "engines": {"node": ">=20"}
+}
