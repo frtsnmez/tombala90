@@ -200,6 +200,37 @@ io.on('connection', socket => {
     io.to(room.code).emit('game:reset'); emitRoom(room); cb?.({ ok: true });
   });
 
+  socket.on('room:leave', (_data = {}, cb = () => {}) => {
+    const room = [...rooms.values()].find(r => r.hostId === socket.id || r.players.has(socket.id) || r.pending.has(socket.id));
+    if (!room) return cb({ ok: true });
+    if (room.hostId === socket.id) {
+      const backup = room.backupId && room.players.get(room.backupId);
+      if (backup) {
+        room.players.delete(room.backupId);
+        room.hostId = backup.id;
+        room.host = { ...backup, card: null };
+        room.backupId = null;
+        io.to(backup.id).emit('room:promoted', { code: room.code, room: publicRoom(room) });
+        console.log('[room] host left, backup promoted', room.code);
+        emitRoom(room); notifyControl(room);
+      } else {
+        stopAuto(room);
+        rooms.delete(room.code);
+        io.to(room.code).emit('room:closed', { reason: 'Yönetici oyundan ayrıldı; yedek yönetici yok.' });
+        console.log('[room] closed by host exit', room.code);
+      }
+    } else {
+      room.players.delete(socket.id);
+      room.pending.delete(socket.id);
+      if (room.backupId === socket.id) room.backupId = null;
+      for (const kind of ['first', 'second', 'tombala']) room.claims.delete(`${socket.id}:${kind}`);
+      emitRoom(room); notifyControl(room);
+      console.log('[room] player left', room.code, socket.id);
+    }
+    socket.leave(room.code);
+    cb({ ok: true });
+  });
+
   socket.on('disconnect', reason => {
     console.log('[socket] disconnected', socket.id, reason);
     // Keep approved players, pending requests, and the host's room in memory.
